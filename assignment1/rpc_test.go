@@ -19,6 +19,9 @@ func TestRPCMain(t *testing.T) {
 }
 
 func expect(t *testing.T, response *Msg, expected *Msg, errstr string, err error) {
+	if err != nil {
+		t.Fatal("Unexpected error: " + err.Error())
+	}
 	ok := true
 	if response.Kind != expected.Kind {
 		ok = false
@@ -408,6 +411,9 @@ func (cl *Client) rcv() (msg *Msg, err error) {
 	line, err := cl.reader.ReadString('\n')
 	if err == nil {
 		msg, err = parseFirst(line)
+		if err != nil {
+			return nil, err
+		}
 		if msg.Kind == 'C' {
 			contents := make([]byte, msg.Numbytes)
 			var c byte
@@ -439,7 +445,7 @@ func parseFirst(line string) (msg *Msg, err error) {
 		var i int
 		if err == nil {
 			if fieldNum >=  len(fields) {
-				err = errors.New("Not enough fields")
+				err = errors.New(fmt.Sprintf("Not enough fields. Expected field #%d in %s\n", fieldNum, line))
 				return 0
 			}
 			i, err = strconv.Atoi(fields[fieldNum])

@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"github.com/cs733/assignment1/fs"
+	"github.com/cs733-iitb/cs733/assignment1/fs"
 	"net"
 	"os"
 	"strconv"
