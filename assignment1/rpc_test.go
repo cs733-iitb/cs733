@@ -1,5 +1,6 @@
 package main
 
+
 import (
 	"bufio"
 	"bytes"
@@ -216,20 +217,29 @@ func TestRPC_ConcurrentWrites(t *testing.T) {
 	clients := make([]*Client, nclients)
 	for i := 0; i < nclients; i++ {
 		cl := mkClient(t)
+		if cl == nil {
+			t.Fatalf("Unable to create client #%d", i)
+		}
 		defer cl.close()
 		clients[i] = cl
 	}
 
+	errCh := make(chan error, nclients)
 	var sem sync.WaitGroup // Used as a semaphore to coordinate goroutines to begin concurrently
 	sem.Add(1)
 	ch := make(chan *Msg, nclients*niters) // channel for all replies
-	for i := 0; i < nclients; i++ {        // 100 clients
+	for i := 0; i < nclients; i++ {
 		go func(i int, cl *Client) {
 			sem.Wait()
 			for j := 0; j < niters; j++ {
 				str := fmt.Sprintf("cl %d %d", i, j)
-				m, _ := cl.write("concWrite", str, 0)
-				ch <- m
+				m, err := cl.write("concWrite", str, 0)
+				if err != nil {
+					errCh <- err
+					break
+				} else {
+					ch <- m
+				}
 			}
 		}(i, clients[i])
 	}
@@ -238,16 +248,20 @@ func TestRPC_ConcurrentWrites(t *testing.T) {
 
 	// There should be no errors
 	for i := 0; i < nclients*niters; i++ {
-		m := <-ch
-		if m.Kind != 'O' {
-			t.Fatalf("Concurrent write failed with kind=%c", m.Kind)
+		select {
+		case m := <-ch:
+			if m.Kind != 'O' {
+				t.Fatalf("Concurrent write failed with kind=%c", m.Kind)
+			}
+		case err := <- errCh:
+			t.Fatal(err)
 		}
 	}
 	m, _ := clients[0].read("concWrite")
 	// Ensure the contents are of the form "cl <i> 9"
 	// The last write of any client ends with " 9"
-	if m.Kind != 'C' || !strings.HasSuffix(string(m.Contents), " 9") {
-		t.Fatalf("Expected to be able to read after 1000 writes")
+	if !(m.Kind == 'C' && strings.HasSuffix(string(m.Contents), " 9")) {
+		t.Fatalf("Expected to be able to read after 1000 writes. Got msg = %v", m)
 	}
 }
 
@@ -262,6 +276,9 @@ func TestRPC_ConcurrentCas(t *testing.T) {
 	clients := make([]*Client, nclients)
 	for i := 0; i < nclients; i++ {
 		cl := mkClient(t)
+		if cl == nil {
+			t.Fatalf("Unable to create client #%d", i)
+		}
 		defer cl.close()
 		clients[i] = cl
 	}
@@ -269,7 +286,7 @@ func TestRPC_ConcurrentCas(t *testing.T) {
 	var sem sync.WaitGroup // Used as a semaphore to coordinate goroutines to *begin* concurrently
 	sem.Add(1)
 
-	m, _ := clients[0].cas("concCas", 0, "first", 0)
+	m, _ := clients[0].write("concCas", "first", 0)
 	ver := m.Version
 	if m.Kind != 'O' || ver == 0 {
 		t.Fatalf("Expected write to succeed and return version")
@@ -277,6 +294,9 @@ func TestRPC_ConcurrentCas(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(nclients)
+
+	errorCh := make(chan error, nclients)
+	
 	for i := 0; i < nclients; i++ {
 		go func(i int, ver int, cl *Client) {
 			sem.Wait()
@@ -284,13 +304,16 @@ func TestRPC_ConcurrentCas(t *testing.T) {
 			for j := 0; j < niters; j++ {
 				str := fmt.Sprintf("cl %d %d", i, j)
 				for {
-					m, _ := cl.cas("concCas", ver, str, 0)
-					if m.Kind == 'O' {
+					m, err := cl.cas("concCas", ver, str, 0)
+					if err != nil {
+						errorCh <- err
+						return
+					} else if m.Kind == 'O' {
 						break
 					} else if m.Kind != 'V' {
-						t.Fatal("Unexpected error in cas")
+						errorCh <- errors.New(fmt.Sprintf("Expected 'V' msg, got %c", m.Kind))
+						return
 					}
-
 					ver = m.Version // retry with latest version
 				}
 			}
@@ -300,9 +323,14 @@ func TestRPC_ConcurrentCas(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // give goroutines a chance
 	sem.Done()                         // Start goroutines
 	wg.Wait()                          // Wait for them to finish
+	select {
+	case e := <- errorCh:
+		t.Fatalf("Error received while doing cas: %v", e)
+	default: // no errors
+	}
 	m, _ = clients[0].read("concCas")
-	if m.Kind != 'C' || !strings.HasSuffix(string(m.Contents), " 9") {
-		t.Fatalf("Expected to be able to read after 1000 writes")
+	if !(m.Kind == 'C' && strings.HasSuffix(string(m.Contents), " 9")) {
+		t.Fatalf("Expected to be able to read after 1000 writes. Got msg.Kind = %d, msg.Contents=%s", m.Kind, m.Contents)
 	}
 }
 
@@ -400,7 +428,7 @@ func (cl *Client) sendRcv(str string) (msg *Msg, err error) {
 }
 
 func (cl *Client) close() {
-	if cl.conn != nil {
+	if cl != nil && cl.conn != nil {
 		cl.conn.Close()
 		cl.conn = nil
 	}
@@ -453,6 +481,9 @@ func parseFirst(line string) (msg *Msg, err error) {
 		return i
 	}
 
+	if len(fields) == 0 {
+		return nil, errors.New("Empty line. The previous command is likely at fault")
+	}
 	switch fields[0] {
 	case "OK": // OK [version]
 		msg.Kind = 'O'
