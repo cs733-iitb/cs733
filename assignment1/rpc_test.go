@@ -357,7 +357,7 @@ func (cl *Client) read(filename string) (*Msg, error) {
 func (cl *Client) write(filename string, contents string, exptime int) (*Msg, error) {
 	var cmd string
 	if exptime == 0 {
-		cmd = fmt.Sprintf("write %s %d \r\n", filename, len(contents))
+		cmd = fmt.Sprintf("write %s %d\r\n", filename, len(contents))
 	} else {
 		cmd = fmt.Sprintf("write %s %d %d\r\n", filename, len(contents), exptime)
 	}
